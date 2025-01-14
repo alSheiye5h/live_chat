@@ -1,5 +1,6 @@
 use tokio::{
     io::{
+            AsyncBufReadExt,
             AsyncReadExt, // trait : kaykhelik t9ra data asynchronously mn files, Tcpstreams ... w tktebhoum f buffer
             AsyncWriteExt, // trait : kaykhelik tkteb data async l files, lTcpStreams ... yaeni tseftom
             BufReader, // struct : kat9ra data w katkhebiha eandou w kat9raha mn eandou blast mtakhoda mn source : ela 9bl lperformance, cnx t9ila, files kbaar ...
@@ -11,12 +12,17 @@ use tokio::{
     sync::{
         mpsc, // multi-producers single-client : hadi channel bch kidwiw threads bintoum, hia li ghndwzo fiha messagat dl users baediyatom,
         Mutex, // mutex ela 9bl shared data bin threads iji thread i locki l mutex ikhdm beya i unlockeha ...
-    }
-    fs::File;
+    },
+    fs::File,
 };
 use std::{
     collections::HashMap,
-    sync::Arc
+    sync::Arc,
+    // fmt::write,
+    // fs::write,
+    // ptr::write,
+    error::Error,
+    ops::DerefMut,
 };
 
 /* hna definina type labels : unbounded yaeni l non limited capaty 
@@ -30,18 +36,18 @@ type Tx = mpsc::UnboundedSender<String>;
 type Rx = mpsc::UnboundedReceiver<String>;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // list dl users
     let clients: Arc<Mutex<HashMap<String, Tx>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // ncreaw listener (server)
     let ip_port = "127.0.0.1:2356";
-    let listener = TcpListener::bind(ip_port).await?;
+    let listener = TcpListener::bind(ip_port).await;
     println!("Chat server is Live on {}", ip_port);
 
     loop {
         // fch itconnecta chi wahed accepteh
-        let (socket, addr) = listener.accept().await;
+        let (socket, addr) = listener.as_ref().expect("Failed to start listener").accept().await?;
         let addr = addr.to_string();
         // ----- add log here -----
         println!("New Connection: {}", addr);
@@ -51,39 +57,44 @@ async fn main() {
 
         // handli l connection
         tokio::spawn(async move {
-            if let Err(e) = handle_client(socket, addr, clients).await {
-                eprintln!("Error: {}", e);
+            let multi_socket: Arc<Mutex<TcpStream>> = Arc::new(Mutex::new(socket));
+            if let Ok(()) = credentials(Arc::clone(&multi_socket)).await {
+                let mut locked_socket = multi_socket.lock().await;
+                if let Err(e) = handle_client(mut locked_socket, addr, clients).await {
+                    println!("Error line 63");
+                }
             }
         });
     }
 }
-
+#[derive(Debug)]
 struct CredentialsError;
 
 impl std::fmt::Display for CredentialsError {
-    f fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "Error in Credentials Function");
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "CredentialsError") 
     }
 }
 
 impl Error for CredentialsError {}
 
-async fn encrypt_pass<'a>(stored_pass: &'a str) -> Result<String, Box<dyn std::error::Error>> {
+async fn encrypt_pass(stored_pass: String) -> Result<String, Box<dyn std::error::Error>> {
     Ok(String::from(stored_pass))
 }
 
 
 // async fn credentials(socket: TcpStream, addr: String, clients:Arc<Mutex<HashMap<String, Tx>>>) -> Result<TcpStream, Box<dyn std::error::Error>> {
-async fn credentials(socket: TcpStream) -> Result<TcpStream, Box<dyn std::error::Error>> {
+async fn credentials(socket: Arc<Mutex<TcpStream>>) -> Result<(), Box<dyn std::error::Error>> {
     
-    let (reader, mut writer) = socket.into_split();
+    let mut locked_stream = socket.lock().await;
+    let (reader, mut writer) = locked_stream.into_split();
     let mut reader = BufReader::new(reader);
 
     let mut buffer = vec![0;1024];
     match reader.read(&mut buffer).await {
         Ok(0) => {
             // ----- add log here -----
-            println!("{} disconnected (credentials)", addr);
+            println!("disconnected (credentials)");
             return Err(Box::new(CredentialsError {}));
         }
         Ok(n) => {
@@ -97,8 +108,8 @@ async fn credentials(socket: TcpStream) -> Result<TcpStream, Box<dyn std::error:
                     if let Some((stored_username, stored_pass)) = line.split_once('_') {
                         if stored_username == username {
                             // send encrypted pass
-                            let encrypted_pass = encrypt_pass(stored_pass).await?;
-                            if write.write_all(encrypted_pass.as_bytes()).await.is_err() {
+                            let encrypted_pass = encrypt_pass(stored_pass.to_string()).await?;
+                            if writer.write_all(encrypted_pass.as_bytes()).await.is_err() {
                                 println!("error sending encrypted password");
                                 return Err(Box::new(CredentialsError {}));  
                             }
@@ -113,7 +124,7 @@ async fn credentials(socket: TcpStream) -> Result<TcpStream, Box<dyn std::error:
                                     Ok(n) => {
                                         let received_password = String::from_utf8_lossy(&buffer[..n]);
                                         if received_password == stored_pass {
-                                            return Ok(socket);
+                                            return Ok(());
                                         } else {
                                             if writer.write_all("incorrect".as_bytes()).await.is_err() {
                                                 println!("error sending that pass is incorrect");
@@ -132,6 +143,7 @@ async fn credentials(socket: TcpStream) -> Result<TcpStream, Box<dyn std::error:
                     return Err(Box::new(CredentialsError {}));
                 }
             }
+            return Err(Box::new(CredentialsError {}));
         }
         Err(e) => {
             // ----- add log here -----
@@ -142,22 +154,20 @@ async fn credentials(socket: TcpStream) -> Result<TcpStream, Box<dyn std::error:
 }
 
 async fn handle_client(
-    socket: TcpStream,
+    mut socket: tokio::sync::MutexGuard<'_, tokio::net::TcpStream>,
     addr: String,
     clients: Arc<Mutex<HashMap<String, Tx>>>) 
-    -> Result<(), Box<(), dyn std::error::Error>> {
+    -> Result<(), Box<dyn std::error::Error>> {
          /* 
             socket.into_split(), kat9sem socket wla tcpstream l two parts: read, write
             bjojhom m implementying AsyncRead w AsyncWrite.
             yaeni t9der treceivi w tsendi fnfs lw9t yaeni concurrently b async
         */
-        if let Some(sock) = credentials(socket).await {
-            let (reader, mut writer) = sock.into_split();
-        } else {
-            println!("error credentials function");
-            return Err(Box::new(CredentialsError {}))
-        }
-        let mut reader = BufReader::new(reader); // wrappina reader f BufReader li chraht lfo9
+
+        // Split the cloned TcpStream into reader and writer
+        let (reader, mut writer) = tokio::io::split(socket.deref_mut());
+        let mut reader = BufReader::new(reader);
+         // wrappina reader f BufReader li chraht lfo9
 
         // unbounded channel mafihach limit d lcapacity, yaeni t9der tsendi 9esdma bghiti
         // dmessagat fiha wakha receiver mayreceivihoumch t9dr tb9a tseft fiha
@@ -200,7 +210,7 @@ async fn handle_client(
         });
 
         let write_task = tokio::spawn(async move {
-            while let Some(msg) => rx.recv().await {
+            while let Some(msg) = rx.recv().await {
                 if writer.write_all(msg.as_bytes()).await.is_err() {
                     break;
                 }
