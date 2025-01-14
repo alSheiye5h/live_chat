@@ -68,41 +68,77 @@ impl std::fmt::Display for CredentialsError {
 
 impl Error for CredentialsError {}
 
+async fn encrypt_pass<'a>(stored_pass: &'a str) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(String::from(stored_pass))
+}
+
+
 // async fn credentials(socket: TcpStream, addr: String, clients:Arc<Mutex<HashMap<String, Tx>>>) -> Result<TcpStream, Box<dyn std::error::Error>> {
 async fn credentials(socket: TcpStream) -> Result<TcpStream, Box<dyn std::error::Error>> {
+    
     let (reader, mut writer) = socket.into_split();
     let mut reader = BufReader::new(reader);
-    let read = tokio::spawn(async move {
-        let mut buffer = vec![0;1024];
-        match reader.read(&mut buffer).await {
-            Ok(0) => {
-                // ----- add log here -----
-                println!("{} disconnected (credentials)", addr);
-                break;
-            }
-            Ok(n) => {
-                let username = String::from_utf8_lossy(&buffer[..n]).to_string();
-                if username.starts_with("-b-e-g-i-n--u-s-e-r-n-a-m-e") {
-                    let db_as_file = File::open("credentials").await?;
-                    let mut buffer = BufReader::new(db_as_file);    
+
+    let mut buffer = vec![0;1024];
+    match reader.read(&mut buffer).await {
+        Ok(0) => {
+            // ----- add log here -----
+            println!("{} disconnected (credentials)", addr);
+            return Err(Box::new(CredentialsError {}));
+        }
+        Ok(n) => {
+            let username = String::from_utf8_lossy(&buffer[..n]).to_string();
+            
+            
+            if username.starts_with("-b-e-g-i-n--u-s-e-r-n-a-m-e") {
+                let db_as_file = File::open("credentials").await?;
+                let mut lines = BufReader::new(db_as_file).lines();
+                while let Some(line) = lines.next_line().await? {
+                    if let Some((stored_username, stored_pass)) = line.split_once('_') {
+                        if stored_username == username {
+                            // send encrypted pass
+                            let encrypted_pass = encrypt_pass(stored_pass).await?;
+                            if write.write_all(encrypted_pass.as_bytes()).await.is_err() {
+                                println!("error sending encrypted password");
+                                return Err(Box::new(CredentialsError {}));  
+                            }
+
+                            for _ in 0..2 {
+                                let mut buffer = vec![0;1024];
+                                match reader.read(&mut buffer).await {
+                                    Ok(0) => {
+                                        println!("user closed connection after sending encrypted password");
+                                        return Err(Box::new(CredentialsError {}));
+                                    }
+                                    Ok(n) => {
+                                        let received_password = String::from_utf8_lossy(&buffer[..n]);
+                                        if received_password == stored_pass {
+                                            return Ok(socket);
+                                        } else {
+                                            if writer.write_all("incorrect".as_bytes()).await.is_err() {
+                                                println!("error sending that pass is incorrect");
+                                            };
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("Error reading password from user");
+                                        return Err(Box::new(e));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    println!("user didn't provide correct credentials");
+                    return Err(Box::new(CredentialsError {}));
                 }
-                
-                // broadcate lmessage l users li online
-                let clients_lock = clients_for_read_task.lock().await;
-                for (client_addr, tx) in clients_lock.iter() {
-                    let _ = tx.send(format!("{} >> {}", addr, message));
-                }
-                drop(clients_lock);
             }
-            Err(e) => {
-                // ----- add log here -----
-                println!("error reading from socket (credentials): {}", e);
-                break;
-            }
-        }    
-    })
-    
-    
+        }
+        Err(e) => {
+            // ----- add log here -----
+            println!("error reading from socket (credentials): {}", e);
+            return Err(Box::new(e));
+        }
+    }     
 }
 
 async fn handle_client(
@@ -153,7 +189,6 @@ async fn handle_client(
                         for (client_addr, tx) in clients_lock.iter() {
                             let _ = tx.send(format!("{} >> {}", addr, message));
                         }
-                        drop(clients_lock);
                     }
                     Err(e) => {
                         // ----- add log here -----
