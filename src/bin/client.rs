@@ -1,7 +1,9 @@
 use tokio::{
-    io::{self, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader},
     net::TcpStream,
 };
+// use std::io::Write; // for flush
+
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,9 +24,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(0) => {
                     println!("Server down.");
                 }
-                Ok(n) => {
+                Ok(_) => {
                     // let received_message = String::from_utf8_lossy(&buffer[..n]);
-                    print!("{}", buffer);
+                    println!("{}", buffer);
                 }
                 Err(e) => {
                     println!("Error reading from server: {}", e);
