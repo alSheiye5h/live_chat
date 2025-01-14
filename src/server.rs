@@ -12,6 +12,7 @@ use tokio::{
         mpsc, // multi-producers single-client : hadi channel bch kidwiw threads bintoum, hia li ghndwzo fiha messagat dl users baediyatom,
         Mutex, // mutex ela 9bl shared data bin threads iji thread i locki l mutex ikhdm beya i unlockeha ...
     }
+    fs::File;
 };
 use std::{
     collections::HashMap,
@@ -57,6 +58,53 @@ async fn main() {
     }
 }
 
+struct CredentialsError;
+
+impl std::fmt::Display for CredentialsError {
+    f fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Error in Credentials Function");
+    }
+}
+
+impl Error for CredentialsError {}
+
+// async fn credentials(socket: TcpStream, addr: String, clients:Arc<Mutex<HashMap<String, Tx>>>) -> Result<TcpStream, Box<dyn std::error::Error>> {
+async fn credentials(socket: TcpStream) -> Result<TcpStream, Box<dyn std::error::Error>> {
+    let (reader, mut writer) = socket.into_split();
+    let mut reader = BufReader::new(reader);
+    let read = tokio::spawn(async move {
+        let mut buffer = vec![0;1024];
+        match reader.read(&mut buffer).await {
+            Ok(0) => {
+                // ----- add log here -----
+                println!("{} disconnected (credentials)", addr);
+                break;
+            }
+            Ok(n) => {
+                let username = String::from_utf8_lossy(&buffer[..n]).to_string();
+                if username.starts_with("-b-e-g-i-n--u-s-e-r-n-a-m-e") {
+                    let db_as_file = File::open("credentials").await?;
+                    let mut buffer = BufReader::new(db_as_file);    
+                }
+                
+                // broadcate lmessage l users li online
+                let clients_lock = clients_for_read_task.lock().await;
+                for (client_addr, tx) in clients_lock.iter() {
+                    let _ = tx.send(format!("{} >> {}", addr, message));
+                }
+                drop(clients_lock);
+            }
+            Err(e) => {
+                // ----- add log here -----
+                println!("error reading from socket (credentials): {}", e);
+                break;
+            }
+        }    
+    })
+    
+    
+}
+
 async fn handle_client(
     socket: TcpStream,
     addr: String,
@@ -67,7 +115,12 @@ async fn handle_client(
             bjojhom m implementying AsyncRead w AsyncWrite.
             yaeni t9der treceivi w tsendi fnfs lw9t yaeni concurrently b async
         */
-        let (reader, mut writer) = socket.into_split();
+        if let Some(sock) = credentials(socket).await {
+            let (reader, mut writer) = sock.into_split();
+        } else {
+            println!("error credentials function");
+            return Err(Box::new(CredentialsError {}))
+        }
         let mut reader = BufReader::new(reader); // wrappina reader f BufReader li chraht lfo9
 
         // unbounded channel mafihach limit d lcapacity, yaeni t9der tsendi 9esdma bghiti
